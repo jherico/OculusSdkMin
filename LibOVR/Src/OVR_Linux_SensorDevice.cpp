@@ -1,9 +1,9 @@
 /************************************************************************************
 
-Filename    :   OVR_OSX_SensorDevice.cpp
-Content     :   OSX SensorDevice implementation
-Created     :   March 14, 2013
-Authors     :   Lee Cooper
+Filename    :   OVR_Linux_SensorDevice.cpp
+Content     :   Linux SensorDevice implementation
+Created     :   June 13, 2013
+Authors     :   Brant Lewis
 
 Copyright   :   Copyright 2013 Oculus VR, Inc. All Rights reserved.
 
@@ -13,7 +13,7 @@ otherwise accompanies this software in either electronic or hard copy form.
 
 *************************************************************************************/
 
-#include "OVR_OSX_HMDDevice.h"
+//#include "OVR_OSX_HMDDevice.h"
 #include "OVR_SensorImpl.h"
 #include "OVR_DeviceImpl.h"
 
@@ -25,8 +25,8 @@ namespace OVR { namespace OSX {
 void SensorDeviceImpl::EnumerateHMDFromSensorDisplayInfo(   const SensorDisplayInfoImpl& displayInfo, 
                                                             DeviceFactory::EnumerateVisitor& visitor)
 {
-
-    OSX::HMDDeviceCreateDesc hmdCreateDesc(&OSX::HMDDeviceFactory::Instance, 1, 1, "", 0);
+/*
+    Linux::HMDDeviceCreateDesc hmdCreateDesc(&Linux::HMDDeviceFactory::Instance, 1, 1, "", 0);
     
     hmdCreateDesc.SetScreenParameters(  0, 0,
                                         displayInfo.HResolution, displayInfo.VResolution,
@@ -38,6 +38,9 @@ void SensorDeviceImpl::EnumerateHMDFromSensorDisplayInfo(   const SensorDisplayI
         hmdCreateDesc.Set7Inch();
 
     visitor.Visit(hmdCreateDesc);
+    */
+
+
 }
 
 } // namespace OVR

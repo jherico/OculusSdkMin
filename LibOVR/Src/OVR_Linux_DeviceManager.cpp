@@ -1,11 +1,11 @@
 /************************************************************************************
 
-Filename    :   OVR_OSX_DeviceManager.cpp
-Content     :   OSX specific DeviceManager implementation.
-Created     :   March 14, 2013
-Authors     :   Lee Cooper
+Filename    :   OVR_Linux_DeviceManager.h
+Content     :   Linux implementation of DeviceManager.
+Created     :   
+Authors     :   
 
-Copyright   :   Copyright 2013 Oculus VR, Inc. All Rights reserved.
+Copyright   :   Copyright 2012 Oculus VR, Inc. All Rights reserved.
 
 Use of this software is subject to the terms of the Oculus license
 agreement provided at the time of installation or download, or which
@@ -13,42 +13,37 @@ otherwise accompanies this software in either electronic or hard copy form.
 
 *************************************************************************************/
 
-#include "OVR_OSX_DeviceManager.h"
+#include "OVR_Linux_DeviceManager.h"
 
 // Sensor & HMD Factories
 #include "OVR_LatencyTestImpl.h"
 #include "OVR_SensorImpl.h"
-#include "OVR_OSX_HMDDevice.h"
-#include "OVR_OSX_HIDDevice.h"
+#include "OVR_Linux_HIDDevice.h"
+#include "OVR_Linux_HMDDevice.h"
 
 #include "Kernel/OVR_Timer.h"
 #include "Kernel/OVR_Std.h"
 #include "Kernel/OVR_Log.h"
 
-#include <IOKit/hid/IOHIDManager.h>
-#include <IOKit/hid/IOHIDKeys.h>
+namespace OVR { namespace Linux {
 
-
-namespace OVR { namespace OSX {
 
 //-------------------------------------------------------------------------------------
-// **** OSX::DeviceManager
+// **** Linux::DeviceManager
 
 DeviceManager::DeviceManager()
 {
 }
 
 DeviceManager::~DeviceManager()
-{
-    OVR_DEBUG_LOG(("OSX::DeviceManager::~DeviceManager was called"));
+{    
 }
 
 bool DeviceManager::Initialize(DeviceBase*)
 {
     if (!DeviceManagerImpl::Initialize(0))
         return false;
-    
-    // Start the background thread.
+
     pThread = *new DeviceManagerThread();
     if (!pThread || !pThread->Start())
         return false;
@@ -58,21 +53,16 @@ bool DeviceManager::Initialize(DeviceBase*)
 
     // Do this now that we know the thread's run loop.
     HidDeviceManager = *HIDDeviceManager::CreateInternal(this);
-
-    CGDisplayRegisterReconfigurationCallback(displayReconfigurationCallBack, this);
          
     pCreateDesc->pDevice = this;
     LogText("OVR::DeviceManager - initialized.\n");
-
     return true;
 }
 
 void DeviceManager::Shutdown()
-{
+{   
     LogText("OVR::DeviceManager - shutting down.\n");
 
-    CGDisplayRemoveReconfigurationCallback(displayReconfigurationCallBack, this);
-    
     // Set Manager shutdown marker variable; this prevents
     // any existing DeviceHandle objects from accessing device.
     pCreateDesc->pLock->pManager = 0;
@@ -86,7 +76,7 @@ void DeviceManager::Shutdown()
     //    after pManager is null.
     //  - Once ExitCommand executes, ThreadCommand::Run loop will exit and release the last
     //    reference to the thread object.
-    pThread->Shutdown();
+    pThread->PushExitCommand(false);
     pThread.Clear();
 
     DeviceManagerImpl::Shutdown();
@@ -124,64 +114,71 @@ DeviceEnumerator<> DeviceManager::EnumerateDevicesEx(const DeviceEnumerationArgs
     return DeviceManagerImpl::EnumerateDevicesEx(args);
 }
 
-void DeviceManager::displayReconfigurationCallBack (CGDirectDisplayID display,
-                                                    CGDisplayChangeSummaryFlags flags,
-                                                    void *userInfo)
-{
-    DeviceManager* manager = reinterpret_cast<DeviceManager*>(userInfo);
-    OVR_UNUSED(manager);
-    
-    if (flags & kCGDisplayAddFlag)
-    {
-        LogText("Display Added, id = %d\n", int(display));
-        manager->EnumerateDevices<HMDDevice>();
-    }
-    else if (flags & kCGDisplayRemoveFlag)
-    {
-        LogText("Display Removed, id = %d\n", int(display));
-        manager->EnumerateDevices<HMDDevice>();
-    }
-}
 
 //-------------------------------------------------------------------------------------
 // ***** DeviceManager Thread 
 
 DeviceManagerThread::DeviceManagerThread()
     : Thread(ThreadStackSize)
-{    
+{
+    int result = pipe(CommandFd);
+    OVR_ASSERT(!result);
+
+    AddSelectFd(NULL, CommandFd[0]);
 }
 
 DeviceManagerThread::~DeviceManagerThread()
 {
+    if (CommandFd[0])
+    {
+        RemoveSelectFd(NULL, CommandFd[0]);
+        close(CommandFd[0]);
+        close(CommandFd[1]);
+    }
 }
+
+bool DeviceManagerThread::AddSelectFd(Notifier* notify, int fd)
+{
+    struct pollfd pfd;
+    pfd.fd = fd;
+    pfd.events = POLLIN|POLLHUP|POLLERR;
+    pfd.revents = 0;
+
+    FdNotifiers.PushBack(notify);
+    PollFds.PushBack(pfd);
+
+    OVR_ASSERT(FdNotifiers.GetSize() == PollFds.GetSize());
+    return true;
+}
+
+bool DeviceManagerThread::RemoveSelectFd(Notifier* notify, int fd)
+{
+    // [0] is reserved for thread commands with notify of null, but we still
+    // can use this function to remove it.
+    for (UPInt i = 0; i < FdNotifiers.GetSize(); i++)
+    {
+        if ((FdNotifiers[i] == notify) && (PollFds[i].fd == fd))
+        {
+            FdNotifiers.RemoveAt(i);
+            PollFds.RemoveAt(i);
+            return true;
+        }
+    }
+    return false;
+}
+
+
 
 int DeviceManagerThread::Run()
 {
+    ThreadCommand::PopBuffer command;
 
     SetThreadName("OVR::DeviceManagerThread");
-    LogText("OVR::DeviceManagerThread - running (ThreadId=0x%p).\n", GetThreadId());
-
-    // Store out the run loop ref.
-    RunLoop = CFRunLoopGetCurrent();
-
-    // Create a 'source' to enable us to signal the run loop to process the command queue.
-    CFRunLoopSourceContext sourceContext;
-    memset(&sourceContext, 0, sizeof(sourceContext));
-    sourceContext.version = 0;
-    sourceContext.info = this;
-    sourceContext.perform = &staticCommandQueueSourceCallback;
-
-    CommandQueueSource = CFRunLoopSourceCreate(kCFAllocatorDefault, 0 , &sourceContext);
-
-    CFRunLoopAddSource(RunLoop, CommandQueueSource, kCFRunLoopDefaultMode);
-
-
+    LogText("OVR::DeviceManagerThread - running (ThreadId=%p).\n", GetThreadId());
+    
     // Signal to the parent thread that initialization has finished.
     StartupEvent.SetEvent();
 
-
-    ThreadCommand::PopBuffer command;
-   
     while(!IsExiting())
     {
         // PopCommand will reset event on empty queue.
@@ -191,83 +188,71 @@ int DeviceManagerThread::Run()
         }
         else
         {
-            SInt32 exitReason = 0;
-            do {
-
-                UInt32 waitMs = INT_MAX;
+            bool commands = 0;
+            do
+            {
+                int waitMs = -1;
 
                 // If devices have time-dependent logic registered, get the longest wait
                 // allowed based on current ticks.
                 if (!TicksNotifiers.IsEmpty())
                 {
                     UInt64 ticksMks = Timer::GetTicks();
-                    UInt32  waitAllowed;
+                    int  waitAllowed;
 
                     for (UPInt j = 0; j < TicksNotifiers.GetSize(); j++)
                     {
-                        waitAllowed = (UInt32)(TicksNotifiers[j]->OnTicks(ticksMks) / Timer::MksPerMs);
+                        waitAllowed = (int)(TicksNotifiers[j]->OnTicks(ticksMks) / Timer::MksPerMs);
                         if (waitAllowed < waitMs)
                             waitMs = waitAllowed;
                     }
                 }
-                
-                // Enter blocking run loop. We may continue until we timeout in which
-                // case it's time to service the ticks. Or if commands arrive in the command
-                // queue then the source callback will call 'CFRunLoopStop' causing this
-                // to return.
-                CFTimeInterval blockInterval = 0.001 * (double) waitMs;
-                exitReason = CFRunLoopRunInMode(kCFRunLoopDefaultMode, blockInterval, false);
 
-                if (exitReason == kCFRunLoopRunFinished)
+                // wait until there is data available on one of the devices or the timeout expires
+                int n = poll(&PollFds[0], PollFds.GetSize(), waitMs);
+
+                if (n > 0)
                 {
-                    // Maybe this will occur during shutdown?
-                    break;
+                    // Iterate backwards through the list so the ordering will not be
+                    // affected if the called object gets removed during the callback
+                    // Also, the HID data streams are located toward the back of the list
+                    // and servicing them first will allow a disconnect to be handled
+                    // and cleaned directly at the device first instead of the general HID monitor
+                    for (int i=PollFds.GetSize()-1; i>=0; i--)
+                    {
+                        if (PollFds[i].revents & POLLERR)
+                        {
+                            OVR_DEBUG_LOG(("poll: error on [%d]: %d", i, PollFds[i].fd));
+                        }
+                        else if (PollFds[i].revents & POLLIN)
+                        {
+                            if (FdNotifiers[i])
+                                FdNotifiers[i]->OnEvent(i, PollFds[i].fd);
+                            else if (i == 0) // command
+                            {
+                                char dummy[128];
+                                read(PollFds[i].fd, dummy, 128);
+                                commands = 1;
+                            }
+                        }
+
+                        if (PollFds[i].revents & POLLHUP)
+                            PollFds[i].events = 0;
+
+                        if (PollFds[i].revents != 0)
+                        {
+                            n--;
+                            if (n == 0)
+                                break;
+                        }
+                    }
                 }
-                else if (exitReason == kCFRunLoopRunStopped )
-                {
-                    // Commands need processing or we're being shutdown.
-                    break;
-                }
-                else if (exitReason == kCFRunLoopRunTimedOut)
-                {
-                    // Timed out so that we can service our ticks callbacks.
-                    continue;
-                }
-                else if (exitReason == kCFRunLoopRunHandledSource)
-                {
-                    // Should never occur since the last param when we call
-                    // 'CFRunLoopRunInMode' is false.
-                    OVR_ASSERT(false);
-                    break;
-                }
-                else
-                {
-                    OVR_ASSERT_LOG(false, ("CFRunLoopRunInMode returned unexpected code"));
-                    break;
-                }
-            }
-            while(true);                    
+            } while (PollFds.GetSize() > 0 && !commands);
         }
     }
 
-                                   
-    CFRunLoopRemoveSource(RunLoop, CommandQueueSource, kCFRunLoopDefaultMode);
-    CFRelease(CommandQueueSource);
-    
-    LogText("OVR::DeviceManagerThread - exiting (ThreadId=0x%p).\n", GetThreadId());
-
+    LogText("OVR::DeviceManagerThread - exiting (ThreadId=%p).\n", GetThreadId());
     return 0;
-}
-    
-void DeviceManagerThread::staticCommandQueueSourceCallback(void* pContext)
-{
-    DeviceManagerThread* pThread = (DeviceManagerThread*) pContext;
-    pThread->commandQueueSourceCallback();
-}
-    
-void DeviceManagerThread::commandQueueSourceCallback()
-{    
-    CFRunLoopStop(RunLoop);
 }
 
 bool DeviceManagerThread::AddTicksNotifier(Notifier* notify)
@@ -289,34 +274,16 @@ bool DeviceManagerThread::RemoveTicksNotifier(Notifier* notify)
     return false;
 }
 
-void DeviceManagerThread::Shutdown()
-{
-    // Push for thread shutdown *WITH NO WAIT*.
-    // This will have the following effect:
-    //  - Exit command will get enqueued, which will be executed later on the thread itself.
-    //  - Beyond this point, this DeviceManager object may be deleted by our caller.
-    //  - Other commands, such as CreateDevice, may execute before ExitCommand, but they will
-    //    fail gracefully due to pLock->pManager == 0. Future commands can't be enqued
-    //    after pManager is null.
-    //  - Once ExitCommand executes, ThreadCommand::Run loop will exit and release the last
-    //    reference to the thread object.
-    PushExitCommand(false);
-
-    // make sure CFRunLoopRunInMode is woken up
-    CFRunLoopSourceSignal(CommandQueueSource);
-    CFRunLoopWakeUp(RunLoop);
-}
-    
-} // namespace OSX
+} // namespace Linux
 
 
 //-------------------------------------------------------------------------------------
 // ***** Creation
 
+
 // Creates a new DeviceManager and initializes OVR.
 DeviceManager* DeviceManager::Create()
 {
-
     if (!System::IsInitialized())
     {
         // Use custom message, since Log is not yet installed.
@@ -325,15 +292,15 @@ DeviceManager* DeviceManager::Create()
         return 0;
     }
 
-    Ptr<OSX::DeviceManager> manager = *new OSX::DeviceManager;
+    Ptr<Linux::DeviceManager> manager = *new Linux::DeviceManager;
 
     if (manager)
     {
         if (manager->Initialize(0))
-        {
+        {            
             manager->AddFactory(&LatencyTestDeviceFactory::Instance);
             manager->AddFactory(&SensorDeviceFactory::Instance);
-            manager->AddFactory(&OSX::HMDDeviceFactory::Instance);
+            manager->AddFactory(&Linux::HMDDeviceFactory::Instance);
 
             manager->AddRef();
         }
@@ -341,9 +308,12 @@ DeviceManager* DeviceManager::Create()
         {
             manager.Clear();
         }
+
     }    
 
     return manager.GetPtr();
 }
 
+
 } // namespace OVR
+
