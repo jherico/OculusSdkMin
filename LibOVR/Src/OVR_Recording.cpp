@@ -1,7 +1,9 @@
 /************************************************************************************
 
-Filename    :   OVRVersion.h
-Content     :   
+Filename    :   Recording.h
+Content     :   Support for recording sensor + camera data
+Created     :   May 12, 2014
+Notes       : 
 
 Copyright   :   Copyright 2014 Oculus VR, Inc. All Rights reserved.
 
@@ -20,14 +22,17 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-*************************************************************************************/
+************************************************************************************/
 
-#ifndef _OVR_VERSION_H
-#define _OVR_VERSION_H
+#include "Kernel/OVR_Math.h"
+#include "Kernel/OVR_Array.h"
+#include "OVR_DeviceMessages.h"
+#include "OVR_Recording.h"
 
-#define OVR_MAJOR_VERSION 0
-#define OVR_MINOR_VERSION 3
-#define OVR_BUILD_VERSION 2
-#define OVR_VERSION_STRING "0.3.2"
+namespace OVR { namespace Recording {
 
-#endif
+// global instance that doesn't do anything
+Recorder r;
+
+}} // OVR::Recording
+
